@@ -3,6 +3,9 @@ mod verify;
 mod certificate;
 mod output;
 mod completion;
+mod chain;
+mod ocsp;
+mod crl;
 
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};

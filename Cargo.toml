@@ -11,11 +11,19 @@ clap_complete = "4.5"
 # TLS
 native-tls = "0.2"
 
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.12", features = ["blocking"] }
+
 # Парсинг сертификатов
 x509-parser = "0.16"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+base64 = "0.22"
+url = "2.5"
+pem = "3.0"
+oid-registry = "0.7"
 
 # Утилиты
 anyhow = "1.0"

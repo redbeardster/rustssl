@@ -1,10 +1,21 @@
 use crate::cli::VerifyArgs;
-use crate::certificate::CertificateInfo;
+use crate::chain::CertificateChain;
+use crate::crl::CrlStatus;
+use crate::ocsp::OcspStatus;
 use anyhow::Result;
 use colored::*;
-use serde_json;
 
-pub fn print_text_output(cert_info: &CertificateInfo, args: &VerifyArgs) -> Result<()> {
+pub fn print_text_output(
+    chain: &CertificateChain,
+    ocsp_status: &Option<OcspStatus>,
+    crl_status: &Option<CrlStatus>,
+    args: &VerifyArgs,
+) -> Result<()> {
+    let leaf = &chain.certificates[0].info;
+
+    println!("{}", "╔════════════════════════════════════════╗".bright_cyan());
+    println!("{}", "║     SSL Certificate Information       ║".bright_cyan().bold());
+    println!("{}", "╚════════════════════════════════════════╝".bright_cyan());
     println!();
 
     println!("{}: {}", "Server".green().bold(), args.server.cyan());
@@ -12,65 +23,102 @@ pub fn print_text_output(cert_info: &CertificateInfo, args: &VerifyArgs) -> Resu
     println!();
 
     println!("{}", "Certificate Details:".yellow().bold());
-    println!("  {}: {}", "Subject".cyan(), cert_info.subject);
-    println!("  {}: {}", "Issuer".cyan(), cert_info.issuer);
-    println!("  {}: {}", "Valid From".cyan(), cert_info.not_before);
-    println!("  {}: {}", "Valid To".cyan(), cert_info.not_after);
+    println!("  {}: {}", "Subject".cyan(), leaf.subject);
+    println!("  {}: {}", "Issuer".cyan(), leaf.issuer);
+    println!("  {}: {}", "Valid From".cyan(), leaf.not_before);
+    println!("  {}: {}", "Valid To".cyan(), leaf.not_after);
 
-    let expiry_color = if cert_info.days_remaining < 0 {
+    let expiry_color = if leaf.days_remaining < 0 {
         "red"
-    } else if cert_info.days_remaining < 30 {
+    } else if leaf.days_remaining < 30 {
         "yellow"
     } else {
         "green"
     };
 
     let expiry_text = match expiry_color {
-        "red" => cert_info.days_remaining.to_string().red(),
-        "yellow" => cert_info.days_remaining.to_string().yellow(),
-        _ => cert_info.days_remaining.to_string().green(),
+        "red" => leaf.days_remaining.to_string().red(),
+        "yellow" => leaf.days_remaining.to_string().yellow(),
+        _ => leaf.days_remaining.to_string().green(),
     };
 
     println!("  {}: {} ({} days)",
         "Expires In".cyan(),
         expiry_text,
-        cert_info.days_remaining
+        leaf.days_remaining
     );
 
-    println!("  {}: {}", "Serial Number".cyan(), cert_info.serial);
-    println!("  {}: {}", "Version".cyan(), cert_info.version);
-    println!("  {}: {}", "Signature Algorithm".cyan(), cert_info.signature_algorithm);
-    println!("  {}: {}", "Public Key Algorithm".cyan(), cert_info.public_key_algorithm);
+    println!("  {}: {}", "Serial Number".cyan(), leaf.serial);
+    println!("  {}: {}", "Version".cyan(), leaf.version);
+    println!("  {}: {}", "Self-signed".cyan(),
+        if leaf.is_self_signed { "Yes".yellow() } else { "No".green() });
 
-    if !cert_info.san_dns.is_empty() {
+    if !leaf.san_dns.is_empty() {
         println!("  {}:", "Subject Alternative Names".cyan());
-        for dns in &cert_info.san_dns {
+        for dns in leaf.san_dns.iter().take(10) {
             println!("    • DNS: {}", dns);
         }
-    }
-
-    if !cert_info.san_ips.is_empty() {
-        for ip in &cert_info.san_ips {
-            println!("    • IP: {}", ip);
+        if leaf.san_dns.len() > 10 {
+            println!("    • ... and {} more", leaf.san_dns.len() - 10);
         }
     }
 
-    let ca_status = if cert_info.is_ca {
-        "Yes".green()
+    let ca_status = if leaf.is_ca {
+        "Yes".yellow()
     } else {
-        "No".red()
+        "No".green()
     };
     println!("  {}: {}", "CA Certificate".cyan(), ca_status);
+
+    // Показываем OCSP статус
+    if let Some(ocsp) = ocsp_status {
+        println!();
+        println!("{}", "Revocation Status:".yellow().bold());
+        print_ocsp_status(ocsp);
+    }
+
+    // Показываем CRL статус
+    if let Some(crl) = crl_status {
+        print_crl_status(crl);
+    }
+
+    // Показываем цепочку если нужно
+    if args.show_chain {
+        chain.print_chain()?;
+    }
 
     println!();
     Ok(())
 }
 
-pub fn print_json_output(cert_info: &CertificateInfo, args: &VerifyArgs) -> Result<()> {
+pub fn print_full_output(
+    chain: &CertificateChain,
+    ocsp_status: &Option<OcspStatus>,
+    crl_status: &Option<CrlStatus>,
+    args: &VerifyArgs,
+) -> Result<()> {
+    // Сначала показываем текстовый вывод
+    print_text_output(chain, ocsp_status, crl_status, args)?;
+
+    // Затем показываем полную цепочку
+    println!("\n{}", "════════════════════════════════════════".bright_black());
+    chain.print_chain()?;
+
+    Ok(())
+}
+
+pub fn print_json_output(
+    chain: &CertificateChain,
+    ocsp_status: &Option<OcspStatus>,
+    crl_status: &Option<CrlStatus>,
+    args: &VerifyArgs,
+) -> Result<()> {
     let output = serde_json::json!({
         "server": args.server,
         "port": args.port,
-        "certificate": cert_info,
+        "certificate_chain": chain.certificates,
+        "ocsp": ocsp_status,
+        "crl": crl_status,
         "insecure": args.insecure,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
@@ -78,3 +126,7 @@ pub fn print_json_output(cert_info: &CertificateInfo, args: &VerifyArgs) -> Resu
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
+
+// Импортируем функции из других модулей
+use crate::ocsp::print_ocsp_status;
+use crate::crl::print_crl_status;

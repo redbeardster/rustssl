@@ -3,7 +3,7 @@ use clap_complete::Shell;
 
 #[derive(Parser)]
 #[command(name = "rustssl")]
-#[command(author, version, about = "Simple CLI app for checking SSL certificates", long_about = None)]
+#[command(author, version, about = "Advanced SSL certificate checker", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -34,7 +34,7 @@ pub struct VerifyArgs {
     #[arg(short, long, default_value = "443")]
     pub port: u16,
 
-    /// Output format (text or json)
+    /// Output format (text, json, or full)
     #[arg(short, long, default_value = "text")]
     pub output: String,
 
@@ -45,4 +45,20 @@ pub struct VerifyArgs {
     /// Disable certificate verification (insecure)
     #[arg(long)]
     pub insecure: bool,
+
+    /// Save certificate to file (PEM format)
+    #[arg(long)]
+    pub save: Option<String>,
+
+    /// Check OCSP revocation status
+    #[arg(long)]
+    pub check_ocsp: bool,
+
+    /// Check CRL revocation status
+    #[arg(long)]
+    pub check_crl: bool,
+
+    /// Show full certificate chain
+    #[arg(long)]
+    pub show_chain: bool,
 }

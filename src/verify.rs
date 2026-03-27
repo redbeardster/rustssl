@@ -1,25 +1,23 @@
 use crate::cli::VerifyArgs;
-use crate::certificate::CertificateInfo;
-use crate::output::{print_json_output, print_text_output};
+use crate::chain::CertificateChain;
+use crate::crl::check_crl;
+use crate::ocsp::check_ocsp;
+use crate::output::{print_json_output, print_text_output, print_full_output};
 use anyhow::{Context, Result};
 use native_tls::TlsConnector;
+use std::fs;
 use std::net::TcpStream;
 use std::time::Duration;
 
 pub fn verify_certificate(args: &VerifyArgs) -> Result<()> {
-    // Сначала пытаемся распарсить как IP:port
-    let socket_addr = match format!("{}:{}", args.server, args.port).parse() {
-        Ok(addr) => addr,
-        Err(_) => {
-            // Если не получилось, то это доменное имя - разрешаем DNS
-            use std::net::ToSocketAddrs;
-            format!("{}:{}", args.server, args.port)
-                .to_socket_addrs()
-                .context("Failed to resolve address")?
-                .next()
-                .context("No addresses found")?
-        }
-    };
+    let addr = format!("{}:{}", args.server, args.port);
+
+    // Разрешаем DNS имя в сокет адрес
+    use std::net::ToSocketAddrs;
+    let socket_addr = addr.to_socket_addrs()
+        .context("Failed to resolve address")?
+        .next()
+        .context("No addresses found")?;
 
     // Подключаемся по TCP с таймаутом
     let stream = TcpStream::connect_timeout(
@@ -41,33 +39,64 @@ pub fn verify_certificate(args: &VerifyArgs) -> Result<()> {
         .connect(&args.server, stream)
         .context("TLS handshake failed")?;
 
-    // Получаем сертификат в формате DER (native-tls::Certificate)
-    let cert = tls_stream.peer_certificate()
+    // Получаем сертификат сервера
+    let peer_cert = tls_stream.peer_certificate()
         .context("No certificate received")?
-        .context("Certificate chain is empty")?;
+        .context("Server did not provide a certificate")?;
 
-    // Конвертируем Certificate в bytes (to_der возвращает Result)
-    let cert_der = cert.to_der()
-        .context("Failed to convert certificate to DER")?;
+    // Конвертируем в DER формат
+    let cert_der = peer_cert.to_der().context("Failed to convert certificate to DER")?;
+    let chain_der = vec![cert_der];
 
-    // Парсим DER в X509 сертификат
-    let (_, parsed_cert) = x509_parser::parse_x509_certificate(&cert_der)
-        .context("Failed to parse certificate")?;
+    // Создаем структуру цепочки
+    let chain = CertificateChain::from_der_chain(&chain_der)?;
 
-    let cert_info = CertificateInfo::from_x509(&parsed_cert);
+    // Сохраняем сертификат в файл если нужно
+    if let Some(filename) = &args.save {
+        save_certificate_chain(&chain, filename)?;
+    }
 
-    // Выводим результат
+    // Проверяем OCSP если нужно
+    let mut ocsp_status = None;
+    if args.check_ocsp {
+        let leaf_cert = &chain_der[0];
+        let issuer_cert = if chain_der.len() > 1 { Some(&chain_der[1][..]) } else { None };
+        ocsp_status = check_ocsp(leaf_cert, issuer_cert)?;
+    }
+
+    // Проверяем CRL если нужно
+    let mut crl_status = None;
+    if args.check_crl {
+        let leaf_cert = &chain_der[0];
+        crl_status = check_crl(leaf_cert)?;
+    }
+
+    // Выводим результат в зависимости от формата
     match args.output.as_str() {
-        "json" => print_json_output(&cert_info, args)?,
-        _ => print_text_output(&cert_info, args)?,
+        "json" => print_json_output(&chain, &ocsp_status, &crl_status, args)?,
+        "full" => print_full_output(&chain, &ocsp_status, &crl_status, args)?,
+        _ => print_text_output(&chain, &ocsp_status, &crl_status, args)?,
     }
 
-    // Проверяем срок действия
-    if cert_info.days_remaining < 0 {
-        anyhow::bail!("Certificate has expired");
-    } else if cert_info.days_remaining < 30 {
-        eprintln!("⚠️  Warning: Certificate expires in {} days", cert_info.days_remaining);
+    Ok(())
+}
+
+fn save_certificate_chain(chain: &CertificateChain, filename: &str) -> Result<()> {
+    let mut pem_content = String::new();
+
+    for cert in &chain.certificates {
+        let pem = pem::encode_config(
+            &pem::Pem::new("CERTIFICATE", cert.der.clone()),
+            pem::EncodeConfig::default()
+        );
+        pem_content.push_str(&pem);
+        pem_content.push('\n');
     }
+
+    fs::write(filename, pem_content)
+        .context(format!("Failed to save certificate to {}", filename))?;
+
+    println!("💾 Certificate chain saved to: {}", filename);
 
     Ok(())
 }
